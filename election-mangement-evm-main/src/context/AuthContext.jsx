@@ -1,6 +1,7 @@
 import { createContext, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8080/api").replace(/\/$/, "");
+const AUTH_BASE = API_BASE.endsWith("/api") ? API_BASE.slice(0, -4) : API_BASE;
 const AUTH_STORAGE_KEY = "ems_auth_v2";
 const TOKEN_REFRESH_THRESHOLD = 60000; // Refresh token 1 minute before expiry
 
@@ -19,7 +20,11 @@ export const AuthContext = createContext({
     electionResults: 0,
   },
   register: async () => ({ success: false, message: "Auth provider unavailable." }),
+  sendRegistrationOtp: async () => ({ success: false, message: "Auth provider unavailable." }),
+  verifyRegistrationOtp: async () => ({ success: false, message: "Auth provider unavailable." }),
   login: async () => ({ success: false, message: "Auth provider unavailable." }),
+  loginWithGoogle: () => {},
+  completeOAuthLogin: async () => ({ success: false, message: "Auth provider unavailable." }),
   logout: () => {},
   createUser: async () => ({ success: false, message: "Auth provider unavailable." }),
   updateUser: async () => ({ success: false, message: "Auth provider unavailable." }),
@@ -36,6 +41,7 @@ export const AuthContext = createContext({
   createElectionResult: async () => ({ success: false, message: "Auth provider unavailable." }),
   updateElectionResult: async () => ({ success: false, message: "Auth provider unavailable." }),
   deleteElectionResult: async () => ({ success: false, message: "Auth provider unavailable." }),
+  uploadElectionData: async () => ({ success: false, message: "Auth provider unavailable." }),
 });
 
 const readAuth = () => {
@@ -212,6 +218,48 @@ export const AuthProvider = ({ children }) => {
     [token]
   );
 
+  const uploadFormData = useCallback(
+    async (path, formData, explicitToken) => {
+      const activeToken = explicitToken ?? token;
+      const headers = {};
+      if (activeToken) {
+        headers.Authorization = `Bearer ${activeToken}`;
+      }
+
+      try {
+        const response = await fetch(`${API_BASE}${path}`, {
+          method: "POST",
+          body: formData,
+          headers,
+        });
+        let payload = null;
+        try {
+          payload = await response.json();
+        } catch {
+          payload = null;
+        }
+
+        if (!response.ok) {
+          const message = payload?.message || `Request failed with status ${response.status}.`;
+          if (response.status === 401) {
+            setToken(null);
+            setCurrentUser(null);
+          }
+          return asFailure(message);
+        }
+
+        if (!payload) {
+          return asFailure("Invalid server response.");
+        }
+
+        return payload;
+      } catch {
+        return asFailure("Unable to connect to backend. Check if API server is running.");
+      }
+    },
+    [token]
+  );
+
   const loadAllData = useCallback(
     async (authToken) => {
       const activeToken = authToken ?? token;
@@ -225,11 +273,11 @@ export const AuthProvider = ({ children }) => {
       }
 
       const [usersRes, incidentsRes, fraudRes, analystRes, electionRes] = await Promise.all([
-        request("/users", {}, activeToken),
-        request("/incidents", {}, activeToken),
-        request("/fraud-reports", {}, activeToken),
-        request("/analyst-reports", {}, activeToken),
-        request("/election-results", {}, activeToken),
+        request("/admin/users", {}, activeToken),
+        request("/admin/incidents", {}, activeToken),
+        request("/admin/fraud-reports", {}, activeToken),
+        request("/admin/analyst-reports", {}, activeToken),
+        request("/admin/election-results", {}, activeToken),
       ]);
 
       setUsers(usersRes.success && Array.isArray(usersRes.data) ? usersRes.data : []);
@@ -283,6 +331,20 @@ export const AuthProvider = ({ children }) => {
     });
   };
 
+  const sendRegistrationOtp = async (email) => {
+    return request("/auth/otp/send", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+  };
+
+  const verifyRegistrationOtp = async (email, otp) => {
+    return request("/auth/otp/verify", {
+      method: "POST",
+      body: JSON.stringify({ email, otp }),
+    });
+  };
+
   const login = async (email, password) => {
     const result = await request("/auth/login", {
       method: "POST",
@@ -306,6 +368,33 @@ export const AuthProvider = ({ children }) => {
     };
   };
 
+  const loginWithGoogle = () => {
+    window.location.assign(`${AUTH_BASE}/oauth2/authorization/google`);
+  };
+
+  const completeOAuthLogin = async (oauthToken) => {
+    if (!oauthToken) {
+      return asFailure("Google login failed. Missing token.");
+    }
+
+    const meResult = await request("/auth/me", {}, oauthToken);
+    if (!meResult.success || !meResult.data) {
+      return asFailure(meResult.message || "Google login failed.");
+    }
+
+    setToken(oauthToken);
+    setCurrentUser(meResult.data);
+    await loadAllData(oauthToken);
+    setupTokenRefresh(oauthToken);
+
+    return {
+      success: true,
+      message: "Google login successful.",
+      user: meResult.data,
+      token: oauthToken,
+    };
+  };
+
   const logout = () => {
     if (refreshTimerRef.current) {
       clearTimeout(refreshTimerRef.current);
@@ -320,7 +409,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const createUser = async (payload) => {
-    const result = await request("/users", {
+    const result = await request("/admin/users", {
       method: "POST",
       body: JSON.stringify(payload),
     });
@@ -331,7 +420,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const updateUser = async (userId, updates) => {
-    const result = await request(`/users/${userId}`, {
+    const result = await request(`/admin/users/${userId}`, {
       method: "PUT",
       body: JSON.stringify(updates),
     });
@@ -347,7 +436,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const deleteUser = async (userId) => {
-    const result = await request(`/users/${userId}`, { method: "DELETE" });
+    const result = await request(`/admin/users/${userId}`, { method: "DELETE" });
     if (result.success) {
       setUsers((prev) => prev.filter((item) => item.id !== userId));
     }
@@ -355,7 +444,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const createIncident = async (payload) => {
-    const result = await request("/incidents", {
+    const result = await request("/admin/incidents", {
       method: "POST",
       body: JSON.stringify(payload),
     });
@@ -366,7 +455,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const updateIncident = async (incidentId, updates) => {
-    const result = await request(`/incidents/${incidentId}`, {
+    const result = await request(`/admin/incidents/${incidentId}`, {
       method: "PUT",
       body: JSON.stringify(updates),
     });
@@ -377,7 +466,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const deleteIncident = async (incidentId) => {
-    const result = await request(`/incidents/${incidentId}`, { method: "DELETE" });
+    const result = await request(`/admin/incidents/${incidentId}`, { method: "DELETE" });
     if (result.success) {
       setIncidents((prev) => prev.filter((item) => item.id !== incidentId));
     }
@@ -385,7 +474,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const createFraudReport = async (payload) => {
-    const result = await request("/fraud-reports", {
+    const result = await request("/admin/fraud-reports", {
       method: "POST",
       body: JSON.stringify(payload),
     });
@@ -396,7 +485,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const updateFraudReport = async (reportId, updates) => {
-    const result = await request(`/fraud-reports/${reportId}`, {
+    const result = await request(`/admin/fraud-reports/${reportId}`, {
       method: "PUT",
       body: JSON.stringify(updates),
     });
@@ -407,7 +496,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const deleteFraudReport = async (reportId) => {
-    const result = await request(`/fraud-reports/${reportId}`, { method: "DELETE" });
+    const result = await request(`/admin/fraud-reports/${reportId}`, { method: "DELETE" });
     if (result.success) {
       setFraudReports((prev) => prev.filter((item) => item.id !== reportId));
     }
@@ -415,7 +504,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const createAnalystReport = async (payload) => {
-    const result = await request("/analyst-reports", {
+    const result = await request("/admin/analyst-reports", {
       method: "POST",
       body: JSON.stringify(payload),
     });
@@ -426,7 +515,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const updateAnalystReport = async (reportId, updates) => {
-    const result = await request(`/analyst-reports/${reportId}`, {
+    const result = await request(`/admin/analyst-reports/${reportId}`, {
       method: "PUT",
       body: JSON.stringify(updates),
     });
@@ -437,7 +526,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const deleteAnalystReport = async (reportId) => {
-    const result = await request(`/analyst-reports/${reportId}`, { method: "DELETE" });
+    const result = await request(`/admin/analyst-reports/${reportId}`, { method: "DELETE" });
     if (result.success) {
       setAnalystReports((prev) => prev.filter((item) => item.id !== reportId));
     }
@@ -445,7 +534,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const createElectionResult = async (payload) => {
-    const result = await request("/election-results", {
+    const result = await request("/admin/election-results", {
       method: "POST",
       body: JSON.stringify(payload),
     });
@@ -456,7 +545,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const updateElectionResult = async (resultId, updates) => {
-    const result = await request(`/election-results/${resultId}`, {
+    const result = await request(`/admin/election-results/${resultId}`, {
       method: "PUT",
       body: JSON.stringify(updates),
     });
@@ -467,9 +556,23 @@ export const AuthProvider = ({ children }) => {
   };
 
   const deleteElectionResult = async (resultId) => {
-    const result = await request(`/election-results/${resultId}`, { method: "DELETE" });
+    const result = await request(`/admin/election-results/${resultId}`, { method: "DELETE" });
     if (result.success) {
       setElectionResults((prev) => prev.filter((item) => item.id !== resultId));
+    }
+    return result;
+  };
+
+  const uploadElectionData = async (file) => {
+    if (!file) {
+      return asFailure("No file selected for upload.");
+    }
+
+    const formData = new FormData();
+    formData.append("file", file);
+    const result = await uploadFormData("/election-results/bulk-upload", formData);
+    if (result.success) {
+      await loadAllData(token);
     }
     return result;
   };
@@ -496,7 +599,11 @@ export const AuthProvider = ({ children }) => {
         electionResults,
         dashboardStats,
         register,
+        sendRegistrationOtp,
+        verifyRegistrationOtp,
         login,
+        loginWithGoogle,
+        completeOAuthLogin,
         logout,
         createUser,
         updateUser,
@@ -513,6 +620,7 @@ export const AuthProvider = ({ children }) => {
         createElectionResult,
         updateElectionResult,
         deleteElectionResult,
+        uploadElectionData,
       }}
     >
       {children}

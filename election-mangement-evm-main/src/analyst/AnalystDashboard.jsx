@@ -11,7 +11,6 @@ import ParticipationPieChart from "./components/charts/ParticipationPieChart";
 import VotingTrendLineChart from "./components/charts/VotingTrendLineChart";
 import RegionResultsChart from "./components/charts/RegionResultsChart";
 
-import electionData from "./data/electionData.json";
 import "./AnalystDashboard.css";
 
 const formatNumber = (value) => Number(value).toLocaleString();
@@ -29,6 +28,8 @@ function AnalystDashboard() {
     currentUser,
     logout,
     analystReports,
+    electionResults,
+    uploadElectionData,
     createAnalystReport,
     updateAnalystReport,
     deleteAnalystReport,
@@ -38,6 +39,9 @@ function AnalystDashboard() {
   const [now, setNow] = useState(() => new Date());
   const [reportForm, setReportForm] = useState(reportInitialForm);
   const [reportMessage, setReportMessage] = useState("");
+  const [uploadFile, setUploadFile] = useState(null);
+  const [uploadMessage, setUploadMessage] = useState("");
+  const [uploading, setUploading] = useState(false);
   const [candidateSearch, setCandidateSearch] = useState("");
 
   useEffect(() => {
@@ -51,57 +55,149 @@ function AnalystDashboard() {
   }, []);
 
   const notifications = useMemo(
-    () => electionData.recentActivity.filter((item) => item.status === "Pending").length,
-    []
+    () => analystReports?.filter((item) => item.status === "draft").length || 0,
+    [analystReports]
   );
+
+  const liveElectionSummary = useMemo(() => {
+    if (!electionResults || !electionResults.length) {
+      return {
+        totalRegisteredVoters: 0,
+        totalVotesCast: 0,
+        participationPercentage: 0,
+        leadingCandidate: "N/A",
+        candidateTotals: {},
+      };
+    }
+
+    const totalVotesCast = electionResults.reduce((sum, result) => sum + (result.votes || 0), 0);
+    const totalRegistered = electionResults.reduce((sum, result) => sum + (result.totalVotes || 0), 0);
+    const candidateTotals = electionResults.reduce((map, result) => {
+      const name = result.winner || result.party || "Unknown";
+      map[name] = (map[name] || 0) + (result.votes || 0);
+      return map;
+    }, {});
+
+    const leadingCandidate = Object.entries(candidateTotals)
+      .sort(([, aVotes], [, bVotes]) => bVotes - aVotes)
+      .map(([name]) => name)[0] || "N/A";
+
+    return {
+      totalRegisteredVoters: totalRegistered,
+      totalVotesCast: totalVotesCast,
+      participationPercentage: totalRegistered > 0 ? Number(((totalVotesCast / totalRegistered) * 100).toFixed(2)) : 0,
+      leadingCandidate,
+      candidateTotals,
+    };
+  }, [electionResults]);
 
   const summaryCards = [
     {
       title: "Total Registered Voters",
-      value: formatNumber(electionData.summary.totalRegisteredVoters),
+      value: formatNumber(liveElectionSummary.totalRegisteredVoters),
       icon: "👥",
       gradient: "gradient-1",
     },
     {
       title: "Total Votes Cast",
-      value: formatNumber(electionData.summary.totalVotesCast),
+      value: formatNumber(liveElectionSummary.totalVotesCast),
       icon: "🗳️",
       gradient: "gradient-2",
     },
     {
       title: "Voter Participation",
-      value: `${electionData.summary.participationPercentage}%`,
+      value: `${liveElectionSummary.participationPercentage}%`,
       icon: "📈",
       gradient: "gradient-3",
     },
     {
       title: "Leading Candidate",
-      value: electionData.summary.leadingCandidate,
+      value: liveElectionSummary.leadingCandidate,
       icon: "🏆",
       gradient: "gradient-4",
     },
   ];
 
+  const votesPerCandidateData = useMemo(() => {
+    if (!electionResults || !electionResults.length) {
+      return [];
+    }
+
+    return Object.entries(liveElectionSummary.candidateTotals || {})
+      .map(([name, votes]) => ({ name, votes }))
+      .sort((a, b) => b.votes - a.votes);
+  }, [electionResults, liveElectionSummary.candidateTotals]);
+
+  const participationData = useMemo(() => {
+    if (!electionResults || !electionResults.length) {
+      return [
+        { name: "Voted", value: 0 },
+        { name: "Not Voted", value: 0 },
+      ];
+    }
+
+    const voted = liveElectionSummary.totalVotesCast;
+    const notVoted = Math.max(liveElectionSummary.totalRegisteredVoters - voted, 0);
+    return [
+      { name: "Voted", value: voted },
+      { name: "Not Voted", value: notVoted },
+    ];
+  }, [electionResults, liveElectionSummary.totalVotesCast, liveElectionSummary.totalRegisteredVoters]);
+
+  const votingTrendData = useMemo(() => {
+    if (!electionResults || !electionResults.length) {
+      return [];
+    }
+
+    const trendMap = {};
+    electionResults.forEach((result) => {
+      const updatedAt = result.updatedAt ? new Date(result.updatedAt) : null;
+      const timeKey = updatedAt
+        ? updatedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        : result.boothName || result.constituency || "Unknown";
+      trendMap[timeKey] = (trendMap[timeKey] || 0) + (result.votes || 0);
+    });
+
+    return Object.entries(trendMap).map(([time, votes]) => ({ time, votes }));
+  }, [electionResults]);
+
+  const regionResultsData = useMemo(() => {
+    if (!electionResults || !electionResults.length) {
+      return [];
+    }
+
+    const regionMap = {};
+    electionResults.forEach((result) => {
+      const region = result.constituency || result.boothName || "Unknown";
+      regionMap[region] = (regionMap[region] || 0) + (result.votes || 0);
+    });
+
+    return Object.entries(regionMap)
+      .map(([region, votes]) => ({ region, votes }))
+      .sort((a, b) => b.votes - a.votes);
+  }, [electionResults]);
+
   const constituencyRows = useMemo(
     () =>
-      electionData.regionResults.map((item) => ({
+      regionResultsData.map((item) => ({
         ...item,
-        share: ((item.votes / electionData.summary.totalVotesCast) * 100).toFixed(2),
+        share: liveElectionSummary.totalVotesCast
+          ? ((item.votes / liveElectionSummary.totalVotesCast) * 100).toFixed(2)
+          : "0.00",
       })),
-    []
+    [regionResultsData, liveElectionSummary.totalVotesCast]
   );
 
   const candidateRows = useMemo(() => {
     const safeSearch = candidateSearch.trim().toLowerCase();
 
-    return [...electionData.votesPerCandidate]
+    return [...votesPerCandidateData]
       .filter((item) => item.name.toLowerCase().includes(safeSearch))
-      .sort((first, second) => second.votes - first.votes)
       .map((item, index) => ({
         ...item,
         rank: index + 1,
       }));
-  }, [candidateSearch]);
+  }, [candidateSearch, votesPerCandidateData]);
 
   const myReports = useMemo(
     () =>
@@ -117,6 +213,26 @@ function AnalystDashboard() {
 
   const resetReportForm = () => {
     setReportForm(reportInitialForm);
+  };
+
+  const handleUploadFileChange = (event) => {
+    setUploadFile(event.target.files?.[0] || null);
+    setUploadMessage("");
+  };
+
+  const handleUploadSubmit = async (event) => {
+    event.preventDefault();
+    if (!uploadFile) {
+      setUploadMessage("Please choose an Excel file to upload.");
+      return;
+    }
+
+    setUploading(true);
+    setUploadMessage("");
+
+    const result = await uploadElectionData(uploadFile);
+    setUploadMessage(result.message);
+    setUploading(false);
   };
 
   const handleReportSubmit = async (event) => {
@@ -190,6 +306,30 @@ function AnalystDashboard() {
         <main className="analyst-main-grid">
           {activeSection === "dashboard" ? (
             <>
+              {currentUser?.role === "analyst" ? (
+                <section className="analyst-upload-card">
+                  <div className="analyst-table-header">
+                    <h3>Bulk Excel Upload</h3>
+                    <p>
+                      Upload election data, turnout, regional statistics, and fraud reports via Excel. The dashboard
+                      refreshes dynamically after import.
+                    </p>
+                  </div>
+                  <form className="analyst-upload-form" onSubmit={handleUploadSubmit}>
+                    <input
+                      type="file"
+                      accept=".xlsx,.xls"
+                      onChange={handleUploadFileChange}
+                      disabled={uploading}
+                    />
+                    <button type="submit" disabled={uploading}>
+                      {uploading ? "Uploading..." : "Upload Excel File"}
+                    </button>
+                  </form>
+                  {uploadMessage && <p className="upload-message">{uploadMessage}</p>}
+                </section>
+              ) : null}
+
               <section className="analyst-summary-grid">
                 {summaryCards.map((card) => (
                   <SummaryCard
@@ -203,10 +343,10 @@ function AnalystDashboard() {
               </section>
 
               <section className="analyst-charts-grid">
-                <VotesPerCandidateChart data={electionData.votesPerCandidate} />
-                <ParticipationPieChart data={electionData.voterParticipation} />
-                <VotingTrendLineChart data={electionData.votingTrend} />
-                <RegionResultsChart data={electionData.regionResults} />
+                <VotesPerCandidateChart data={votesPerCandidateData} />
+                <ParticipationPieChart data={participationData} />
+                <VotingTrendLineChart data={votingTrendData} />
+                <RegionResultsChart data={regionResultsData} />
               </section>
 
               <section className="analyst-table-card">
@@ -219,29 +359,48 @@ function AnalystDashboard() {
                   <table>
                     <thead>
                       <tr>
-                        <th>Voter ID</th>
-                        <th>Region</th>
-                        <th>Time</th>
+                        <th>Constituency</th>
+                        <th>Booth</th>
+                        <th>Last Updated</th>
                         <th>Status</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {electionData.recentActivity.map((item) => (
-                        <tr key={`${item.voterId}-${item.time}`}>
-                          <td>{item.voterId}</td>
-                          <td>{item.region}</td>
-                          <td>{item.time}</td>
-                          <td>
-                            <span
-                              className={`activity-status ${
-                                item.status === "Verified" ? "verified" : "pending"
-                              }`}
-                            >
-                              {item.status}
-                            </span>
-                          </td>
+                      {electionResults && electionResults.length ? (
+                        [...electionResults]
+                          .sort(
+                            (a, b) =>
+                              new Date(b.updatedAt || b.createdAt || 0).getTime() -
+                              new Date(a.updatedAt || a.createdAt || 0).getTime()
+                          )
+                          .slice(0, 8)
+                          .map((item) => (
+                            <tr key={item.id}>
+                              <td>{item.constituency || "N/A"}</td>
+                              <td>{item.boothName || "N/A"}</td>
+                              <td>
+                                {item.updatedAt
+                                  ? new Date(item.updatedAt).toLocaleString()
+                                  : item.createdAt
+                                  ? new Date(item.createdAt).toLocaleString()
+                                  : "N/A"}
+                              </td>
+                              <td>
+                                <span
+                                  className={`activity-status ${
+                                    item.status?.toLowerCase() === "verified" ? "verified" : "pending"
+                                  }`}
+                                >
+                                  {item.status || "Pending"}
+                                </span>
+                              </td>
+                            </tr>
+                          ))
+                      ) : (
+                        <tr>
+                          <td colSpan={4}>No activity yet. Upload an Excel file to populate dashboard data.</td>
                         </tr>
-                      ))}
+                      )}
                     </tbody>
                   </table>
                 </div>
