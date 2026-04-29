@@ -1,7 +1,9 @@
 import { createContext, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8080/api").replace(/\/$/, "");
-const AUTH_BASE = API_BASE.endsWith("/api") ? API_BASE.slice(0, -4) : API_BASE;
+const API_BASE = (
+  import.meta.env.VITE_API_BASE_URL ||
+  "https://sec2sdp23-emsbackendfinal-production.up.railway.app/api"
+).replace(/\/$/, "");
 const AUTH_STORAGE_KEY = "ems_auth_v2";
 const TOKEN_REFRESH_THRESHOLD = 60000; // Refresh token 1 minute before expiry
 
@@ -23,8 +25,6 @@ export const AuthContext = createContext({
   sendRegistrationOtp: async () => ({ success: false, message: "Auth provider unavailable." }),
   verifyRegistrationOtp: async () => ({ success: false, message: "Auth provider unavailable." }),
   login: async () => ({ success: false, message: "Auth provider unavailable." }),
-  loginWithGoogle: () => {},
-  completeOAuthLogin: async () => ({ success: false, message: "Auth provider unavailable." }),
   logout: () => {},
   createUser: async () => ({ success: false, message: "Auth provider unavailable." }),
   updateUser: async () => ({ success: false, message: "Auth provider unavailable." }),
@@ -368,33 +368,6 @@ export const AuthProvider = ({ children }) => {
     };
   };
 
-  const loginWithGoogle = () => {
-    window.location.assign(`${AUTH_BASE}/oauth2/authorization/google`);
-  };
-
-  const completeOAuthLogin = async (oauthToken) => {
-    if (!oauthToken) {
-      return asFailure("Google login failed. Missing token.");
-    }
-
-    const meResult = await request("/auth/me", {}, oauthToken);
-    if (!meResult.success || !meResult.data) {
-      return asFailure(meResult.message || "Google login failed.");
-    }
-
-    setToken(oauthToken);
-    setCurrentUser(meResult.data);
-    await loadAllData(oauthToken);
-    setupTokenRefresh(oauthToken);
-
-    return {
-      success: true,
-      message: "Google login successful.",
-      user: meResult.data,
-      token: oauthToken,
-    };
-  };
-
   const logout = () => {
     if (refreshTimerRef.current) {
       clearTimeout(refreshTimerRef.current);
@@ -602,8 +575,6 @@ export const AuthProvider = ({ children }) => {
         sendRegistrationOtp,
         verifyRegistrationOtp,
         login,
-        loginWithGoogle,
-        completeOAuthLogin,
         logout,
         createUser,
         updateUser,
