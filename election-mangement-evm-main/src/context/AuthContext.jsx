@@ -6,6 +6,7 @@ const API_BASE = (
 ).replace(/\/$/, "");
 const AUTH_STORAGE_KEY = "ems_auth_v2";
 const TOKEN_REFRESH_THRESHOLD = 60000; // Refresh token 1 minute before expiry
+const REQUEST_TIMEOUT_MS = 15000;
 
 export const AuthContext = createContext({
   users: [],
@@ -176,6 +177,8 @@ export const AuthProvider = ({ children }) => {
   const request = useCallback(
     async (path, options = {}, explicitToken) => {
       const activeToken = explicitToken ?? token;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
       const headers = {
         "Content-Type": "application/json",
         ...(options.headers || {}),
@@ -189,6 +192,7 @@ export const AuthProvider = ({ children }) => {
         const response = await fetch(`${API_BASE}${path}`, {
           ...options,
           headers,
+          signal: controller.signal,
         });
         let payload = null;
         try {
@@ -211,8 +215,13 @@ export const AuthProvider = ({ children }) => {
         }
 
         return payload;
-      } catch {
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          return asFailure("Backend request timed out. Check server email/SMTP configuration.");
+        }
         return asFailure("Unable to connect to backend. Check if API server is running.");
+      } finally {
+        clearTimeout(timeoutId);
       }
     },
     [token]
