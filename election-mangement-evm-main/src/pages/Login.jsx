@@ -25,6 +25,7 @@ function Login() {
       <form className="auth-card" onSubmit={handleSubmit}>
         <h2>Login</h2>
         <p className="muted">Sign in to continue to your dashboard.</p>
+        <p className="muted">Backend: Railway connected</p>
 
         <label htmlFor="email">Email</label>
         <input
